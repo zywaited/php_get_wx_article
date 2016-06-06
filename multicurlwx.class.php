@@ -92,7 +92,10 @@
 		public function getWxContent($wx,$page = 1)
 		{
 			//这里url的参数可以添加时间查询,对于后面解析更方便，这里没有这么做
-			$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&sort=-1&search_field=4&page=' . $page;
+			if($this->last_time)
+				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&sort=-1&search_field=4&page=' . $page;
+			else
+				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&post_time=0&sort=-1&search_field=4&page=' . $page;
 			$curl = $this->createCurl($url);
 			$content = curl_exec($curl);
 			curl_close($curl);
@@ -208,7 +211,7 @@
 			$this->wx_list = $this->db->getAll(); //初始化数据
 			$this->last_time = $this->db->getLastTime();
 			$this->db->truncate();
-			$this->db->begin_transaction();
+			// $this->db->begin_transaction();
 			if($this->wx_config['init_type'])
 			{
 				require './worker.class.php';
@@ -224,7 +227,7 @@
 				$this->redisdb->printAndPut();
 				while($this->wx_config['again_num'] && $this->redisdb->isFailed())
 				{
-					$this->db->begin_transaction();
+					// $this->db->begin_transaction();
 					--$this->wx_config['again_num'];
 					echo 'start try again and has ' . $this->wx_config['again_num'] . ' chance' . PHP_EOL;
 					$this->worker->run();
@@ -233,6 +236,7 @@
 			}
 			else
 			{
+				$this->db->begin_transaction();
 				$this->multiCurl();
 				$this->printAndPut();
 				while($this->wx_config['again_num'] && $this->isFailed())
@@ -243,8 +247,9 @@
 					$this->multiCurl();
 				}
 				$this->printAndPut(true);
+				$this->db->commit();
 			}
-			$this->db->commit();
+			// $this->db->commit();
 		}
 
 		/**
@@ -256,6 +261,8 @@
 		{
 			if($this->wx_list && $this->wx_config['multi_num'])
 			{
+				//是否已经结束的标志
+				$over_flag = false;
 				$wx_len = count($this->wx_list);
 				$mh = curl_multi_init();
 				//记录当前curl，方便查找
@@ -265,37 +272,40 @@
 					$this->requestCurl[$i] = $curl;
 					curl_multi_add_handle($mh, $curl);
 				}
+
+				$status = 0;
 				do
 				{
 					while(($cme = curl_multi_exec($mh, $status)) == CURLM_CALL_MULTI_PERFORM)
 						;
 					if(CURLM_OK != $cme)
 						break;
-					while ($done = curl_multi_info_read($mh))
-					{
-						// $info = curl_getinfo($done['handle']);
-						$content = curl_multi_getcontent($done['handle']);
-						// $error = curl_error($done['handle']);
 
-						$wx_index = $this->getWxIndex($done['handle']);
+					$resultCurl = array();
+					while ($result = curl_multi_info_read($mh))
+					{
+						// $info = curl_getinfo($result['handle']);
+						$content = curl_multi_getcontent($result['handle']);
+						// $error = curl_error($result['handle']);
+
+						$wx_index = $this->getWxIndex($result['handle']);
 						$wx_nows = $this->wx_list[$wx_index];
 						try
 						{
 							$affected_num = $this->saveData($this->parseContent($content,$wx_nows));
 							if($affected_num)
-								echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has inserted ' . $affected_num . 'and the id is ' . $wx_index . PHP_EOL;
+								echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has inserted ' . $affected_num . ' and the id is ' . $wx_index . ' and the page is ' . $this->fetch_info[$wx_nows['wx']]['page'] . PHP_EOL;
 							else
 								echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has no data and the id is ' . $wx_index . ' and the page is ' . $this->fetch_info[$wx_nows['wx']]['page'] . PHP_EOL;
 						} catch(\Exception $e)
 						{
 							echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has failed and the id is ' . $wx_index . ' and the error message is ' . $e->getMessage() . PHP_EOL;
-							$fail_list[] = $wx_nows;
+							$this->fail_list[] = $wx_nows;
 							$this->fetch_info[$wx_nows['wx']]['time_flag'] = true; //出错就不在继续抓取该微信
 						}
 
 						//移除已经完成的
-		                curl_multi_remove_handle($mh, $done['handle']);
-		                curl_close($done['handle']);
+		                curl_multi_remove_handle($mh, $result['handle']);
 		                unset($this->requestCurl[$wx_index]);
 
 						//如果需要，加入新的句柄
@@ -313,16 +323,18 @@
 								$curl = $this->createByWx($wx_index);
 								$this->requestCurl[$wx_index] = $curl;
 							}
-							curl_multi_add_handle($mh, $curl);
+							if($curl)
+								curl_multi_add_handle($mh, $curl);
 		                }
-					}
+		            }
 
 		            //睡眠，不要抓取太频繁
-				    sleep(1);
+				    sleep(0.6);
 					if ($status)
 		                curl_multi_select($mh, 10);
 				} while($status);
 			}
+			curl_multi_close($mh);
 		}
 
 		/**
@@ -332,6 +344,8 @@
 		 */
 		public function multiProcess()
 		{
+			// Redisdb::clearInstance();
+			// $this->redisdb = Redisdb::getInit();
 			//多进程完全复制一份数据，此处需要重置mysql连接，不然会出现2006错误
 			Mysqlidb::clearInstance();
 			$this->db = Mysqlidb::getInit();
@@ -340,15 +354,17 @@
 				$wx_nows = $this->redisdb->get();
 				if(! $wx_nows)
 					break; //没有微信号数据时跳出while
+				echo 'start' . PHP_EOL;
+				$this->db->begin_transaction();
 				for($i = 0; $i < $this->wx_config['page_num']; ++$i)
 				{
 					try
 					{
 						$affected_num = $this->saveData($this->parseContent($this->getWxContent($wx_nows['wx'], $i + 1),$wx_nows));
 						if($affected_num)
-							echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has inserted ' . $affected_num . 'and the id is ' . $wx_nows['id'] . PHP_EOL;
+							echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has inserted ' . $affected_num . 'and the id is ' . $wx_nows['id'] . ' and the page is ' . ($i + 1) . PHP_EOL;
 						else
-							echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has no data and the id is ' . $wx_nows['id']  . ' and the page is ' . ($i + 1) . PHP_EOL;
+							echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has no data and the id is ' . $wx_nows['id'] . ' and the page is ' . ($i + 1) . PHP_EOL;
 
 						//睡眠，不要抓取太频繁
 			            sleep(1);
@@ -364,6 +380,8 @@
 						break; //出现问题时跳出for和当前微信号
 					}
 				}
+				$this->db->commit();
+				echo 'end' . PHP_EOL;
 			}
 		}
 
@@ -406,7 +424,10 @@
 		{
 			$wx = $this->wx_list[$i]['wx'];
 			$this->fetch_info[$wx]['page'] = !empty($this->fetch_info[$wx]['page']) ? ($this->fetch_info[$wx]['page'] + 1) : 1;
-			$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&sort=-1&search_field=4&page=' . $this->fetch_info[$wx]['page'];
+			if($this->last_time)	
+				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&sort=-1&search_field=4&page=' . $this->fetch_info[$wx]['page'];
+			else
+				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&post_time=0&sort=-1&search_field=4&page=' . $this->fetch_info[$wx]['page'];
         	return $this->createCurl($url);
 		}
 

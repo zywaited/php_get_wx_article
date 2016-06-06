@@ -9,7 +9,9 @@
 		 */
 		private static $instance = null;
 		private $conn = null;
-		public $table = 'wp_wxarticle_bak';
+		protected $table = null;
+		protected $time_table = null;
+		protected $info_table = null;
 		private $time_flag = null;
 
 		private $file_opener = null;
@@ -25,6 +27,9 @@
 		protected final function __construct()
 		{
 			$init_data = require './config/db.php';
+			$this->table = $init_data['table'];
+			$this->time_table = $init_data['time_table'];
+			$this->info_table = $init_data['info_table'];
 			$this->conn = new \Mysqli($init_data['host'],$init_data['user'],$init_data['passwd'],$init_data['db']);
 			if(! $this->conn)
 			{
@@ -72,7 +77,7 @@
 		  */
 		public function getAll()
 		{
-			$sql = 'select id,wx from wp_wxinfo where is_exist=1';
+			$sql = 'select id,wx from ' . $this->info_table . ' where is_exist=1';
 			$re = $this->conn->query($sql);
 			if(! $re)
 				return array();
@@ -90,7 +95,7 @@
 		{
 			if(!$this->time_flag)
 				return 0;
-			$sql = 'select time from wp_wxarticle order by aid desc limit 1';
+			$sql = 'select time from ' . $this->time_table . ' order by aid desc limit 1';
 			$re = $this->conn->query($sql);
 			if(! $re)
 				return 0;

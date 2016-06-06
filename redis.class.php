@@ -191,9 +191,9 @@
 		public function printAndPut($is_over=false)
 		{
 			$this->fail_len = $this->failLen();
-			echo 'now ' . $this->fail_len .' WeChat public numbers have failed' . PHP_EOL;
 			if($this->fail_len)
 			{
+				echo 'now ' . $this->fail_len .' WeChat public numbers have failed' . PHP_EOL;
 				for($i = 0; $i < $this->fail_len; ++$i)
 				{
 					echo 'the fail WeChat public number is ' . $this->redis->rPopLPush($this->fail_list,$this->wx_list) . PHP_EOL;
@@ -201,6 +201,7 @@
 			}
 			elseif($is_over)
 			{
+				echo 'now ' . $this->fail_len .' WeChat public numbers have failed' . PHP_EOL;
 				echo 'all WeChat public numbers have fetched and success' . PHP_EOL;
 			}
 			if($is_over)
@@ -216,5 +217,14 @@
 		{
 			return $this->fail_len > 0;
 		} 
-
+		
+		/**
+         * 清空实例以便多进程使用而不会中断
+         * @access public
+         * @return void
+         */
+        public static function clearInstance()
+        {               
+            self::$instance = null;
+        }
 	}
