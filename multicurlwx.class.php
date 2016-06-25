@@ -261,7 +261,7 @@
 		{
 			if($this->wx_list && $this->wx_config['multi_num'])
 			{
-				//是否已经结束的标志
+				//是否已经结束的标志,防止意外退出
 				$over_flag = false;
 				$wx_len = count($this->wx_list);
 				$mh = curl_multi_init();
@@ -281,36 +281,47 @@
 					if(CURLM_OK != $cme)
 						break;
 
-					$resultCurl = array();
 					while ($result = curl_multi_info_read($mh))
 					{
-						// $info = curl_getinfo($result['handle']);
-						$content = curl_multi_getcontent($result['handle']);
+						$info = curl_getinfo($result['handle']);
+
+						$wx_index = (substr($info['url'],strrpos($info['url'], 'wx_index=') + 9)) + 0;
+
 						// $error = curl_error($result['handle']);
 
-						$wx_index = $this->getWxIndex($result['handle']);
+						// $wx_index = $this->getWxIndex($result['handle']);
 						$wx_nows = $this->wx_list[$wx_index];
+
 						try
 						{
-							$affected_num = $this->saveData($this->parseContent($content,$wx_nows));
-							if($affected_num)
-								echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has inserted ' . $affected_num . ' and the id is ' . $wx_index . ' and the page is ' . $this->fetch_info[$wx_nows['wx']]['page'] . PHP_EOL;
+							if(!isset($this->fetch_info[$wx_nows['wx']]['fetched']))
+							{
+								$content = curl_multi_getcontent($result['handle']);
+								$affected_num = $this->saveData($this->parseContent($content,$wx_nows));
+								if($affected_num)
+									echo 'the WeChat public number (' . $wx_nows['id'] . ') : ' . $wx_nows['wx'] . ' has inserted ' . $affected_num . ' and the page is ' . $this->fetch_info[$wx_nows['wx']]['page'] . PHP_EOL;
+								else
+									echo 'the WeChat public number (' . $wx_nows['id'] . ') : ' . $wx_nows['wx'] . ' has no data and the page is ' . $this->fetch_info[$wx_nows['wx']]['page'] . PHP_EOL;
+								
+								$this->fetch_info[$wx_nows['wx']]['fetched'] = true;
+							}
 							else
-								echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has no data and the id is ' . $wx_index . ' and the page is ' . $this->fetch_info[$wx_nows['wx']]['page'] . PHP_EOL;
+								$this->fetch_info[$wx_nows['wx']]['time_flag'] = true;	// 如果出现重复的情况，这里重置一下，跳出本微信号
 						} catch(\Exception $e)
 						{
-							echo 'the WeChat public number : ' . $wx_nows['wx'] . ' has failed and the id is ' . $wx_index . ' and the error message is ' . $e->getMessage() . PHP_EOL;
+							echo 'the WeChat public number (' . $wx_nows['id'] . ') : ' . $wx_nows['wx'] . ' has failed and the error message is ' . $e->getMessage() . PHP_EOL;
 							$this->fail_list[] = $wx_nows;
 							$this->fetch_info[$wx_nows['wx']]['time_flag'] = true; //出错就不在继续抓取该微信
 						}
 
 						//移除已经完成的
 		                curl_multi_remove_handle($mh, $result['handle']);
+		                // curl_close($result['handle']);
 		                unset($this->requestCurl[$wx_index]);
 
 						//如果需要，加入新的句柄
 						if ($i < $wx_len && isset($this->wx_list[$i]))
-		                {
+		                { 
 		                	if($this->fetch_info[$wx_nows['wx']]['time_flag'])
 		                	{
 		                		$curl = $this->createByWx($i);
@@ -323,16 +334,18 @@
 								$curl = $this->createByWx($wx_index);
 								$this->requestCurl[$wx_index] = $curl;
 							}
-							if($curl)
-								curl_multi_add_handle($mh, $curl);
+							
+							curl_multi_add_handle($mh, $curl);
 		                }
+		                else
+		                	$over_flag = true;
 		            }
 
 		            //睡眠，不要抓取太频繁
-				    sleep(0.6);
+				    // sleep(0.6);
 					if ($status)
 		                curl_multi_select($mh, 10);
-				} while($status);
+				} while($status || !$over_flag);
 			}
 			curl_multi_close($mh);
 		}
@@ -403,7 +416,7 @@
 		 * 获取当前curl正在抓取的公众号的位置
 		 * @access protected
 		 * @param Curl $curl curl资源
-		 * @return String
+		 * @return Int
 		 */
 		protected function getWxIndex($curl)
 		{
@@ -425,9 +438,10 @@
 			$wx = $this->wx_list[$i]['wx'];
 			$this->fetch_info[$wx]['page'] = !empty($this->fetch_info[$wx]['page']) ? ($this->fetch_info[$wx]['page'] + 1) : 1;
 			if($this->last_time)	
-				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&sort=-1&search_field=4&page=' . $this->fetch_info[$wx]['page'];
+				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&sort=-1&search_field=4&page=' . $this->fetch_info[$wx]['page'] . '&wx_index=' . $i;
 			else
-				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&post_time=0&sort=-1&search_field=4&page=' . $this->fetch_info[$wx]['page'];
+				$url = 'http://www.gsdata.cn/query/article?q=' . $wx . '&post_time=0&sort=-1&search_field=4&page=' . $this->fetch_info[$wx]['page'] . '&wx_index=' . $i;
+        	
         	return $this->createCurl($url);
 		}
 
